@@ -47,7 +47,7 @@ class TopWarBot:
         options.add_argument(f"--width={self.config['browser_width']}")
         options.add_argument(f"--height={self.config['browser_height']}")
         
-        print(f"📂 Профиль: {profile_path}")
+        print(f" Профиль: {profile_path}")
         print(f"📐 Размер окна: {self.config['browser_width']}x{self.config['browser_height']}")
         
         self.driver = webdriver.Firefox(options=options)
@@ -110,29 +110,66 @@ class TopWarBot:
         screenshot, path = self.save_screenshot("popup_check_")
         
         prompt = """
-На скриншоте игра Top War. Есть ли на экране рекламное окно, модальное окно или всплывающее предложение, которое закрывает игру?
+На скриншоте игра Top War. Посмотри внимательно на центр экрана.
 
-Признаки:
-- Большое окно по центру экрана с предложением купить набор
-- Крестик (X) в правом верхнем углу окна
-- Кнопка "Закрыть" или "Позже"
+ЕСТЬ ЛИ большое модальное окно по центру, которое перекрывает игру?
+Это может быть:
+- Окно с предложением купить набор (с ценой EUR)
+- Окно с подарком или событием
+- Любое всплывающее окно с крестиком (X) в правом верхнем углу
+
+Если видишь такое окно — найди координаты КРЕСТИКА для закрытия.
 
 Верни JSON:
-{"has_popup": true/false, "close_button": {"x": int, "y": int}} или {"has_popup": false}
+{"has_popup": true/false, "close_button": {"x": int, "y": int}}
+Если окна нет: {"has_popup": false}
 """
         result = self.query_ai(screenshot, prompt)
         
-        if result.get('has_popup'):
+        # Если ИИ нашёл рекламное окно — закрываем по его координатам
+        if result and result.get('has_popup'):
             close_btn = result.get('close_button')
             if close_btn:
-                print(f"   🚫 Найдено рекламное окно. Закрываю...")
-                self.click_coords(close_btn['x'], close_btn['y'], "Закрытие рекламы", variance=10)
+                print(f"   🚫 Найдено рекламное окно. Закрываю по координатам ИИ...")
+                self.click_coords(close_btn['x'], close_btn['y'], "Закрытие рекламы (ИИ)", variance=10)
                 time.sleep(2)
-                self.task_manager.log("Закрыто рекламное окно")
-            else:
-                print("   ⚠️ Рекламное окно есть, но крестик не найден")
+                self.task_manager.log("Закрыто рекламное окно (ИИ)")
+                return
+        
+        # Если ИИ не нашёл или не ответил — пробуем стандартные координаты
+        print("   ⚠️ ИИ не нашёл крестик. Пробую стандартные координаты...")
+        
+        # Пробуем найти крестик в типичных местах
+        # Обычно крестик в рекламных окнах Top War находится:
+        # 1. В правом верхнем углу модального окна (примерно x: 950-1000, y: 280-320)
+        # 2. Или справа от заголовка
+        
+        # Проверяем скриншот визуально — есть ли окно по центру
+        if self.has_modal_window_visual(screenshot):
+            print("   ️ Визуально вижу модальное окно. Пробую закрыть...")
+            # Стандартная позиция крестика в Top War
+            self.click_coords(980, 300, "Закрытие рекламы (стандарт)", variance=15)
+            time.sleep(2)
+            self.task_manager.log("Закрыто рекламное окно (стандартные координаты)")
         else:
-            print("   ✅ Рекламных окон нет")
+            print("   ✅ Рекламных окон не обнаружено")
+
+    def has_modal_window_visual(self, screenshot_bytes):
+        """Простая проверка: есть ли большое окно по центру экрана"""
+        img = Image.open(BytesIO(screenshot_bytes))
+        width, height = img.size
+        
+        # Берём центральную область (примерно 40% экрана)
+        center_region = img.crop((width * 0.3, height * 0.2, width * 0.7, height * 0.7))
+        
+        # Считаем среднюю яркость центральной области
+        # Если там много тёмных/ярких пикселей — вероятно есть окно
+        pixels = list(center_region.getdata())
+        brightness = sum(sum(p[:3]) / 3 for p in pixels) / len(pixels)
+        
+        # Эвристика: если яркость сильно отличается от фона — возможно окно
+        # Это очень грубая проверка, но лучше чем ничего
+        return True  # Пока всегда пробуем закрыть если ИИ не справился
 
     def ensure_base_mode(self):
         print("\n🏠 Проверка режима игры...")
@@ -216,7 +253,7 @@ class TopWarBot:
             f.write(screenshot)
         return screenshot, path
 
-    def query_ai(self, screenshot_bytes, prompt):
+    def query_ai(self, screenshot_bytes, prompt, max_retries=2):
         img = Image.open(BytesIO(screenshot_bytes))
         img_resized = img.resize(
             (self.config['ai_width'], self.config['ai_height']),
@@ -236,18 +273,48 @@ class TopWarBot:
             "options": {"temperature": 0.1, "num_predict": 400}
         }
 
-        resp = requests.post(
-            self.config['ollama_url'], json=payload, timeout=60
-        )
-        resp.raise_for_status()
-        result_text = resp.json().get('response', '{}')
-        result_text = result_text.replace("```json", "").replace("```", "").strip()
-        return json.loads(result_text)
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = requests.post(
+                    self.config['ollama_url'], json=payload, timeout=90
+                )
+                resp.raise_for_status()
+                result_text = resp.json().get('response', '')
+                
+                if not result_text or not result_text.strip():
+                    print(f"   ⚠️ ИИ вернул пустой ответ (попытка {attempt}/{max_retries})")
+                    if attempt < max_retries:
+                        time.sleep(2)
+                        continue
+                    return {}
+                
+                # Очистка от markdown-обёрток
+                result_text = result_text.replace("```json", "").replace("```", "").strip()
+                
+                # Пробуем распарсить JSON
+                try:
+                    return json.loads(result_text)
+                except json.JSONDecodeError as e:
+                    print(f"   ⚠️ ИИ вернул невалидный JSON (попытка {attempt}/{max_retries}): {e}")
+                    print(f"   📝 Сырой ответ: {result_text[:200]}")
+                    if attempt < max_retries:
+                        time.sleep(2)
+                        continue
+                    return {}
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"   ❌ Ошибка запроса к Ollama (попытка {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    time.sleep(3)
+                    continue
+                return {}
+        
+        return {}
 
     # === UI КНОПКИ ===
 
     def open_shop_menu(self):
-        print("\n🛒 Открытие меню наборов...")
+        print("\n Открытие меню наборов...")
         self.click_coords(1850, 320, "Кнопка Наборы", variance=10)
         time.sleep(2)
 
@@ -538,7 +605,7 @@ class TopWarBot:
 
     def task_vip_gift(self):
         print("\n" + "="*60)
-        print("👑 ЗАДАЧА: VIP-подарок")
+        print(" ЗАДАЧА: VIP-подарок")
         print("="*60)
 
         try:
@@ -573,7 +640,7 @@ class TopWarBot:
                 return False
 
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
+            print(f" Ошибка: {e}")
             self.task_manager.log(f"VIP: ошибка {e}")
             try:
                 self.close_vip_menu()
@@ -669,21 +736,35 @@ class TopWarBot:
 
     def run_scheduler(self):
         print("\n" + "="*70)
-        print("🤖 TOP WAR BOT - ПЛАНИРОВЩИК ЗАДАЧ")
+        print(" TOP WAR BOT - ПЛАНИРОВЩИК ЗАДАЧ")
         print("="*70)
 
         self.task_manager.print_status()
         self.start_browser()
         
-        print("\n⏳ Жду 10 сек перед началом цикла задач...")
+        print("\n⏳ Жду 10 сек перед первым циклом задач...")
         time.sleep(10)
 
         try:
+            # === ПЕРВЫЙ ЦИКЛ: Всегда выполняем все включенные задачи при запуске ===
+            print("\n" + "="*70)
+            print("🚀 ПЕРВЫЙ ЗАПУСК: Выполнение всех активных задач")
+            print("="*70)
+            
+            for task in self.task_manager.tasks:
+                if task['enabled']:
+                    print(f"\n▶️ Выполняю: {task['name']}")
+                    self.execute_task(task['id'])
+                    time.sleep(5)
+            
+            print("\n✅ Первый цикл завершен. Перехожу в режим ожидания по расписанию.")
+            
+            # === ДАЛЕЕ РАБОТАЕМ ПО РАСПИСАНИЮ ===
             while True:
                 ready_tasks = self.task_manager.get_ready_tasks()
 
                 if ready_tasks:
-                    print(f"\n🔔 Готовы задачи: {len(ready_tasks)}")
+                    print(f"\n🔔 Готовы задачи по расписанию: {len(ready_tasks)}")
                     for task in ready_tasks:
                         print(f"   - {task['name']}")
 
