@@ -1,3 +1,6 @@
-cmd
-cd C:\python\topwar
-C:\python\topwar\venv\Scripts\activate.bat
+@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+call venv\Scripts\activate.bat
+python main.py
+pause
