@@ -1,0 +1,48 @@
+{
+    "settings": {
+        "day_start_hour": 2,
+        "log_file": "bot_log.txt"
+    },
+    "tasks": [
+        {
+            "id": "shop_gifts",
+            "name": "Сбор алмазов (Рекламные привилегии)",
+            "type": "daily",
+            "frequency": 1,
+            "enabled": true,
+            "last_run": "2026-09-20T17:48:01.094788"
+        },
+        {
+            "id": "vip_gift",
+            "name": "VIP-подарок",
+            "type": "daily",
+            "frequency": 1,
+            "enabled": true,
+            "last_run": "2026-09-20T17:48:06.104734"
+        },
+        {
+            "id": "regular_events",
+            "name": "Регулярные события",
+            "type": "daily",
+            "frequency": 3,
+            "enabled": false,
+            "last_run": null
+        },
+        {
+            "id": "valuable_events",
+            "name": "Ценные события",
+            "type": "daily",
+            "frequency": 2,
+            "enabled": false,
+            "last_run": null
+        },
+        {
+            "id": "production_collect",
+            "name": "Сбор производства",
+            "type": "hourly",
+            "frequency": 4,
+            "enabled": false,
+            "last_run": null
+        }
+    ]
+}
