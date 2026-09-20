@@ -31,46 +31,161 @@ class TopWarBot:
         print("🦊 Запускаю Firefox с профилем Top War...")
         
         options = Options()
-        
-        # ВАШ ПУТЬ К ПРОФИЛЮ
         profile_path = r"C:\Users\Admin\AppData\Roaming\Mozilla\Firefox\Profiles\6egxe08i.topwar"
         
         options.add_argument("-profile")
         options.add_argument(profile_path)
         
-        # === КРИТИЧЕСКИЕ НАСТРОЙКИ ДЛЯ АВТОМАТИЗАЦИИ ===
-        
-        # 1. Принудительно включаем все расширения (VPN) при запуске через Selenium
         options.set_preference("extensions.autoDisableScopes", 0)
         options.set_preference("extensions.enabledScopes", 15)
-        
-        # 2. Отключаем защиту от автоматизации, которая может ломать Canvas-игры
         options.set_preference("dom.webdriver.enabled", False)
         options.set_preference("useAutomationExtension", False)
-        
-        # 3. Разрешаем WebGL и аппаратное ускорение (важно для Top War)
         options.set_preference("webgl.disabled", False)
         options.set_preference("layers.acceleration.force-enabled", True)
-        
-        # 4. Отключаем предупреждение о запущенном профиле
         options.set_preference("browser.tabs.remote.autostart", False)
         
-        # Размер окна браузера
         options.add_argument(f"--width={self.config['browser_width']}")
         options.add_argument(f"--height={self.config['browser_height']}")
         
         print(f"📂 Профиль: {profile_path}")
+        print(f"📐 Размер окна: {self.config['browser_width']}x{self.config['browser_height']}")
         
         self.driver = webdriver.Firefox(options=options)
-        
-        # Убираем флаг webdriver из JS (для Firefox используется execute_script)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         print(f"🌐 Открываю {self.config['game_url']}")
         self.driver.get(self.config['game_url'])
         
-        print("✅ Браузер запущен. VPN и сессии должны быть активны.")
-        time.sleep(5)
+        print("✅ Браузер запущен. Ожидаю загрузки игры...")
+        
+        self.wait_for_game_load()
+        self.close_popup_ads()
+        self.ensure_base_mode()
+
+    def wait_for_game_load(self, max_attempts=4):
+        print("\n⏳ Проверка загрузки игры...")
+        
+        for attempt in range(1, max_attempts + 1):
+            print(f"   Попытка {attempt}/{max_attempts}...")
+            time.sleep(15)
+            
+            screenshot, path = self.save_screenshot("load_check_")
+            print(f"   💾 Скриншот: {path}")
+            
+            prompt = """
+На скриншоте игра Top War. Определи, загрузилась ли игра полностью:
+
+ЗАГРУЖЕНА если видно:
+- Аватар игрока в левом верхнем углу
+- Ресурсы (золото, энергия, кристаллы)
+- Здания на карте или интерфейс базы/мира
+- Кнопки меню (Построить, Мир, База и т.д.)
+
+НЕ ЗАГРУЖЕНА если:
+- Черный/белый экран
+- Экран загрузки с прогресс-баром
+- Пустой экран без UI элементов
+
+Верни JSON:
+{"loaded": true/false, "description": "что видно на экране"}
+"""
+            result = self.query_ai(screenshot, prompt)
+            loaded = result.get('loaded', False)
+            description = result.get('description', 'неизвестно')
+            
+            print(f"   🤖 ИИ: {description}")
+            
+            if loaded:
+                print("✅ Игра загрузилась!")
+                return True
+            else:
+                print(f"   ⏳ Игра еще не загрузилась. Жду еще 15 сек...")
+        
+        print("❌ Игра не загрузилась после максимального числа попыток")
+        self.task_manager.log("Игра не загрузилась после 4 попыток")
+        return False
+
+    def close_popup_ads(self):
+        print("\n🔍 Проверка на рекламные окна...")
+        screenshot, path = self.save_screenshot("popup_check_")
+        
+        prompt = """
+На скриншоте игра Top War. Есть ли на экране рекламное окно, модальное окно или всплывающее предложение, которое закрывает игру?
+
+Признаки:
+- Большое окно по центру экрана с предложением купить набор
+- Крестик (X) в правом верхнем углу окна
+- Кнопка "Закрыть" или "Позже"
+
+Верни JSON:
+{"has_popup": true/false, "close_button": {"x": int, "y": int}} или {"has_popup": false}
+"""
+        result = self.query_ai(screenshot, prompt)
+        
+        if result.get('has_popup'):
+            close_btn = result.get('close_button')
+            if close_btn:
+                print(f"   🚫 Найдено рекламное окно. Закрываю...")
+                self.click_coords(close_btn['x'], close_btn['y'], "Закрытие рекламы", variance=10)
+                time.sleep(2)
+                self.task_manager.log("Закрыто рекламное окно")
+            else:
+                print("   ⚠️ Рекламное окно есть, но крестик не найден")
+        else:
+            print("   ✅ Рекламных окон нет")
+
+    def ensure_base_mode(self):
+        print("\n🏠 Проверка режима игры...")
+        screenshot, path = self.save_screenshot("mode_check_")
+        
+        prompt = """
+На скриншоте игра Top War. Определи текущий режим:
+
+БАЗА если видно:
+- Остров с зданиями игрока по центру
+- Кнопка "Мир" внизу справа
+- Мало других игроков на экране
+
+МИР если видно:
+- Много баз других игроков
+- Карта с множеством зданий
+- Кнопка "База" внизу справа
+
+Верни JSON:
+{"mode": "BASE" или "WORLD"}
+"""
+        result = self.query_ai(screenshot, prompt)
+        mode = result.get('mode', 'UNKNOWN')
+        
+        print(f"   🤖 Текущий режим: {mode}")
+        
+        if mode == "WORLD":
+            print("   🔄 Переключаюсь на режим БАЗА...")
+            self.switch_to_base(screenshot)
+        elif mode == "BASE":
+            print("   ✅ Уже в режиме БАЗА")
+        else:
+            print("   ⚠️ Не удалось определить режим")
+
+    def switch_to_base(self, screenshot_bytes):
+        prompt = """
+На скриншоте игра Top War в режиме МИР.
+Найди кнопку "БАЗА" или "Base" внизу экрана (обычно справа).
+
+Верни JSON:
+{"base_button": {"x": int, "y": int}} или {"base_button": null}
+"""
+        result = self.query_ai(screenshot_bytes, prompt)
+        btn = result.get('base_button')
+        
+        if btn:
+            self.click_coords(btn['x'], btn['y'], "Переключение на БАЗУ", variance=8)
+            time.sleep(3)
+            print("   ✅ Переключено на БАЗУ")
+            self.task_manager.log("Переключено на режим БАЗА")
+        else:
+            print("   ❌ Кнопка БАЗА не найдена")
+            self.task_manager.log("Не удалось переключиться на БАЗУ")
 
     def click_coords(self, x, y, description="", variance=None):
         if variance is None:
@@ -132,7 +247,7 @@ class TopWarBot:
     # === UI КНОПКИ ===
 
     def open_shop_menu(self):
-        print("\n Открытие меню наборов...")
+        print("\n🛒 Открытие меню наборов...")
         self.click_coords(1850, 320, "Кнопка Наборы", variance=10)
         time.sleep(2)
 
@@ -401,7 +516,7 @@ class TopWarBot:
             return False
 
     def close_vip_menu(self):
-        print("\n Закрытие VIP меню...")
+        print("\n🚪 Закрытие VIP меню...")
         screenshot, _ = self.save_screenshot("vip_close_")
 
         prompt = """
@@ -502,7 +617,7 @@ class TopWarBot:
             return True
 
         except Exception as e:
-            print(f" Ошибка: {e}")
+            print(f"❌ Ошибка: {e}")
             self.task_manager.log(f"Алмазы: ошибка {e}")
             try:
                 self.close_reward_menu()
@@ -558,10 +673,10 @@ class TopWarBot:
         print("="*70)
 
         self.task_manager.print_status()
-
         self.start_browser()
-        print("\n⏳ Жду загрузки игры (15 сек)...")
-        time.sleep(15)
+        
+        print("\n⏳ Жду 10 сек перед началом цикла задач...")
+        time.sleep(10)
 
         try:
             while True:
